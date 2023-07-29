@@ -32,7 +32,8 @@ typedef struct EthArpPacket {
 	ArpHdr arp;
 }EthernetArpPacket;
 
-char* hostMAC;
+char hostMAC[6];
+// char* hostMAC;
 char* senderMAC;
 using namespace std;
 
@@ -57,7 +58,8 @@ void findMacAddr(char *interface) {
 
 	close(sock);
 	
-    hostMAC = ifr.ifr_hwaddr.sa_data;
+   //  hostMAC = ifr.ifr_hwaddr.sa_data;
+   memcpy(hostMAC, ifr.ifr_hwaddr.sa_data, 6);
 }
 
 void sendARP(pcap_t *handle, uint32_t src_ip, uint32_t dst_ip, uint16_t operation) {
@@ -94,8 +96,9 @@ void sendARP(pcap_t *handle, uint32_t src_ip, uint32_t dst_ip, uint16_t operatio
 		memcpy((char*)(packet.arp.dst_hdr_adr), senderMAC, 6);
 	}
 
-    if (pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(packet)) == PCAP_ERROR) {
-        fprintf(stderr, "Couldn't send packet\n");
+	static int result = pcap_sendpacket(handle, reinterpret_cast<const u_char*>(&packet), sizeof(packet));
+    if (result == PCAP_ERROR) {
+		fprintf(stderr, "pcap_sendpacket return %d error=%s\n", result, pcap_geterr(handle));
 		exit(1);
     }
 
@@ -119,9 +122,9 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-	bool flag = false;
+	findMacAddr(dev);
 
-	for(int i=0; i< (argc-2)/2; i += 2) {
+	for(int i = 0; i < (argc-2)/2; i += 2) {
 		uint32_t sourceIP = inet_addr(argv[i+2]);
 		uint32_t destinationIP = inet_addr(argv[i+3]);
 
@@ -130,11 +133,6 @@ int main(int argc, char* argv[]) {
 			return -1;
 		}
 		
-		if (!flag) {
-			findMacAddr(dev);
-			flag = true;
-		}
-
 		sendARP(handle, sourceIP, destinationIP, 1);
 
 		struct pcap_pkthdr* header;
@@ -143,25 +141,26 @@ int main(int argc, char* argv[]) {
 		while (true) {
 			int res = pcap_next_ex(handle, &header, &packet);
 			
-			if (res == 0) continue;
-
+			if (res == 0) continue; // Fail to capture
 			if (res == PCAP_ERROR || res == PCAP_ERROR_BREAK) {
 				printf("pcap_next_ex return %d(%s) \n", res, pcap_geterr(handle));
 				return -1;
 			}
 
 			EthHdr *eth = (EthHdr*)packet;
-			if (ntohs(eth -> ether_type) != 0x0806 || !strncmp((char*)(eth -> ether_dst), hostMAC, 6))
+			ArpHdr *arp = (ArpHdr*)(packet + 14);
+			// Differentiate the packet
+			if (ntohs(eth -> ether_type) != 0x0806 || memcmp((char*)(eth -> ether_dst), hostMAC, 6))
 				continue;
 
-			ArpHdr *arp = (ArpHdr*)(packet + 14);
 			senderMAC = (char *)(arp -> src_hdr_adr);
-
+			
 			break;
 		}
 		
 		sendARP(handle, sourceIP, destinationIP, 2);
 	}
+
 	return 0;
 }
 
